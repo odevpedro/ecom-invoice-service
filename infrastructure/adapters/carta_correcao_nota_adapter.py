@@ -2,7 +2,7 @@ from core.entities.nota_fiscal import NotaFiscal
 from core.enum.status_nota import StatusNota
 from infrastructure.external_services.sefaz_client import SefazClient
 from infrastructure.external_services.signer import Signer
-from core.services.carta_correcao_port import CartaCorrecaoPort
+from core.services.ports.carta_correcao_port import CartaCorrecaoPort
 
 
 class NotaFiscalCartaCorrecaoAdapter(CartaCorrecaoPort):

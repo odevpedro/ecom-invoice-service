@@ -1,6 +1,6 @@
 from core.entities.nota_fiscal import NotaFiscal
 from core.enum.status_nota import StatusNota
-from core.services.emissao_nota_port import EmissaoNotaPort
+from core.services.ports.emissao_nota_port import EmissaoNotaPort
 from infrastructure.external_services.sefaz_client import SefazClient
 from infrastructure.external_services.signer import Signer
 
