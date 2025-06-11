@@ -2,18 +2,11 @@
 """
 Client stub for interacting with SEFAZ web services.
 Provides methods to generate XML and send requests for NF-e, cancellation, and CC-e.
-This stub now generates unique keys to avoid duplicates.
 """
 import uuid
 from random import randint
 from typing import NamedTuple
-
-from fastapi import Depends
-
-from app.interfaces.controllers.invoice_controller import InvoiceResponseSchema, router
 from core.entities.nota_fiscal import NotaFiscal
-from core.services.ports.nota_fiscal_repository_port import NotaFiscalRepository
-
 
 class SefazResponse(NamedTuple):
     status: str
@@ -64,4 +57,3 @@ class SefazClient:
         """
         protocol_number = str(randint(100000000, 999999999))
         return SefazResponse(status="CCE_AUTORIZADA", access_key=signed_xml, protocol_number=protocol_number)
-
