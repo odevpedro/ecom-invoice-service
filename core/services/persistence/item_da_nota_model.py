@@ -2,8 +2,8 @@ from sqlalchemy import Column, Integer, String, Float, JSON, ForeignKey
 from sqlalchemy.dialects.postgresql import UUID as PGUUID
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import relationship
+from core.services.persistence.base import Base
 
-Base = declarative_base()
 
 class ItemDaNotaModel(Base):
     __tablename__ = "item_da_nota"

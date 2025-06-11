@@ -1,3 +1,4 @@
+# app/interfaces/controllers/invoice_controller.py
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
 from typing import List, Optional
@@ -10,12 +11,6 @@ from core.value_objects.endereço import Endereco
 from core.value_objects.imposto import Imposto
 from core.exceptions.domain_exceptions import DomainException
 from application.use_cases.emit_invoice import EmitInvoiceUseCase
-
-from infrastructure.external_services.sefaz_client import SefazClient
-from infrastructure.external_services.signer import Signer
-from infrastructure.adapters.emissao_nota_adapter import NotaFiscalEmissaoAdapter
-from infrastructure.adapters.nota_fiscal_sqlalchemy import NotaFiscalSqlAlchemyAdapter
-from infrastructure.persistence.db import SessionLocal
 
 router = APIRouter(prefix="/invoices", tags=["invoices"])
 
@@ -36,7 +31,15 @@ class InvoiceCreateSchema(BaseModel):
     destinatario_endereco: dict
     itens: List[ItemSchema]
 
-class ItemResponseSchema(ItemSchema):
+class ItemResponseSchema(BaseModel):
+    sku: str
+    descricao: str
+    quantidade: int
+    valor_unitario: float
+    cfop: str
+    ncm: str
+    cst: str
+    impostos: dict
     total: float
 
 class InvoiceResponseSchema(BaseModel):
@@ -54,7 +57,11 @@ class InvoiceResponseSchema(BaseModel):
 
 
 def get_emit_invoice_use_case():
-
+    from infrastructure.external_services.sefaz_client import SefazClient
+    from infrastructure.external_services.signer import Signer
+    from infrastructure.adapters.emissao_nota_adapter import NotaFiscalEmissaoAdapter
+    from infrastructure.adapters.nota_fiscal_sqlalchemy import NotaFiscalSqlAlchemyAdapter
+    from infrastructure.persistence.db import SessionLocal
 
     session = SessionLocal()
     repo = NotaFiscalSqlAlchemyAdapter(session)
@@ -64,7 +71,7 @@ def get_emit_invoice_use_case():
     return EmitInvoiceUseCase(emissor, repo)
 
 @router.post("/", response_model=InvoiceResponseSchema, status_code=status.HTTP_201_CREATED)
-def emit_invoice(
+async def emit_invoice(
     payload: InvoiceCreateSchema,
     use_case: EmitInvoiceUseCase = Depends(get_emit_invoice_use_case)
 ) -> InvoiceResponseSchema:
@@ -75,23 +82,38 @@ def emit_invoice(
         emitente_endereco=Endereco(**payload.emitente_endereco),
         destinatario_endereco=Endereco(**payload.destinatario_endereco)
     )
-    for item in payload.itens:
+    for item_payload in payload.itens:
         nota.adicionar_item(ItemDaNota(
-            sku=item.sku,
-            descricao=item.descricao,
-            quantidade=item.quantidade,
-            valor_unitario=item.valor_unitario,
-            cfop=item.cfop,
-            ncm=item.ncm,
-            cst=item.cst,
-            impostos=Imposto(**item.impostos)
+            sku=item_payload.sku,
+            descricao=item_payload.descricao,
+            quantidade=item_payload.quantidade,
+            valor_unitario=item_payload.valor_unitario,
+            cfop=item_payload.cfop,
+            ncm=item_payload.ncm,
+            cst=item_payload.cst,
+            impostos=Imposto(**item_payload.impostos)
         ))
     # Executa use case
     try:
         nota_emitida = use_case.execute(nota)
     except DomainException as e:
         raise HTTPException(status_code=400, detail=str(e))
-    # Converte para schema de resposta
+
+    # Converte para schema de resposta explicitamente
+    itens_resp = []
+    for it in nota_emitida.itens:
+        itens_resp.append(ItemResponseSchema(
+            sku=it.sku,
+            descricao=it.descricao,
+            quantidade=it.quantidade,
+            valor_unitario=it.valor_unitario,
+            cfop=it.cfop,
+            ncm=it.ncm,
+            cst=it.cst,
+            impostos=it.impostos.__dict__,
+            total=it.total
+        ))
+
     resp = InvoiceResponseSchema(
         id=nota_emitida.id,
         chave_acesso=nota_emitida.chave_acesso,
@@ -103,11 +125,6 @@ def emit_invoice(
         emitente_endereco=nota_emitida.emitente_endereco.__dict__,
         destinatario_endereco=nota_emitida.destinatario_endereco.__dict__,
         impostos_totais=(nota_emitida.impostos_totais.__dict__ if nota_emitida.impostos_totais else None),
-        itens=[
-            ItemResponseSchema(**{
-                **item.dict(),
-                "total": item.total
-            }) for item in nota_emitida.itens
-        ]
+        itens=itens_resp
     )
     return resp

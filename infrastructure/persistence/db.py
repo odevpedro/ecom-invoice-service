@@ -4,7 +4,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 # TODO: ajustar a URL de conexão com seu banco de dados
-DATABASE_URL = "postgresql://user:password@localhost:5432/invoice_db"
+DATABASE_URL = "postgresql+psycopg://user:password@localhost:5432/invoice_db"
 
 # Cria o engine SQLAlchemy
 engine = create_engine(

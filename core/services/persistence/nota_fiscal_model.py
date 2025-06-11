@@ -1,12 +1,13 @@
 from sqlalchemy import Column, String, DateTime, Enum as SQLEnum, JSON
 from sqlalchemy.dialects.postgresql import UUID as PGUUID
-from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import relationship
 from uuid import uuid4
 from datetime import datetime
 from core.services.persistence.status_nota_model import StatusNotaModel
+from core.services.persistence.base import Base
 
-Base = declarative_base()
+
+
 
 class NotaFiscalModel(Base):
     __tablename__ = "nota_fiscal"
