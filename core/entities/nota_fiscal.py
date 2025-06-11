@@ -29,7 +29,7 @@ class ItemDaNota:
 
 @dataclass
 class NotaFiscal:
-    # Campos obrigatórios sem valor default devem vir primeiro
+
     emitente_cnpj: CnpjCpf
     destinatario_cnpj: CnpjCpf
     emitente_endereco: Endereco
