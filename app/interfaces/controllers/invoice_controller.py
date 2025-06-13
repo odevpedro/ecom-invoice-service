@@ -1,9 +1,17 @@
 # app/interfaces/controllers/invoice_controller.py
 from fastapi import APIRouter, Depends, HTTPException, status
-from pydantic import BaseModel
-from typing import List, Optional
+from pydantic import BaseModel, Field, constr, conint, confloat
+from typing import List, Optional, Dict, TypeAlias
 from uuid import UUID
 from datetime import datetime
+
+# Type aliases for readability (Pydantic v2 uses 'pattern' instead of 'regex')
+CNPJType: TypeAlias = constr(pattern=r'^\d{14}$')
+UFType: TypeAlias = constr(pattern=r'^[A-Z]{2}$')
+CEPType: TypeAlias = constr(pattern=r'^\d{8}$')
+CFOPType: TypeAlias = constr(pattern=r'^\d{4}$')
+NCMType: TypeAlias = constr(pattern=r'^\d{8}$')
+CSTType: TypeAlias = constr(pattern=r'^\d{3}$')
 
 from core.entities.nota_fiscal import NotaFiscal, ItemDaNota
 from core.value_objects.cnpjcpf import CnpjCpf
@@ -22,33 +30,35 @@ from infrastructure.persistence.db import SessionLocal
 
 router = APIRouter(prefix="/invoices", tags=["invoices"])
 
-# Schemas
+# DTOs com validações Pydantic v2
 class ItemSchema(BaseModel):
-    sku: str
-    descricao: str
-    quantidade: int
-    valor_unitario: float
-    cfop: str
-    ncm: str
-    cst: str
-    impostos: dict
+    sku: constr(pattern=r'^[A-Z0-9]{3,10}$') = Field(...)
+    descricao: constr(min_length=3, max_length=100) = Field(...)
+    quantidade: conint(gt=0) = Field(...)
+    valor_unitario: confloat(gt=0.0) = Field(...)
+    cfop: CFOPType = Field(...)
+    ncm: NCMType = Field(...)
+    cst: CSTType = Field(...)
+    impostos: Dict[str, confloat(ge=0.0)] = Field(...)
+
+class AddressSchema(BaseModel):
+    logradouro: constr(min_length=3) = Field(...)
+    numero: constr(min_length=1) = Field(...)
+    municipio: constr(min_length=3) = Field(...)
+    uf: UFType = Field(...)
+    cep: CEPType = Field(...)
+    complemento: Optional[str] = None
+    bairro: Optional[str] = None
 
 class InvoiceCreateSchema(BaseModel):
-    emitente_cnpj: str
-    destinatario_cnpj: str
-    emitente_endereco: dict
-    destinatario_endereco: dict
-    itens: List[ItemSchema]
+    emitente_cnpj: CNPJType = Field(...)
+    destinatario_cnpj: CNPJType = Field(...)
+    emitente_endereco: AddressSchema
+    destinatario_endereco: AddressSchema
+    itens: List[ItemSchema] = Field(..., min_items=1)
 
-class ItemResponseSchema(BaseModel):
-    sku: str
-    descricao: str
-    quantidade: int
-    valor_unitario: float
-    cfop: str
-    ncm: str
-    cst: str
-    impostos: dict
+# Response DTOs
+class ItemResponseSchema(ItemSchema):
     total: float
 
 class InvoiceResponseSchema(BaseModel):
@@ -59,12 +69,12 @@ class InvoiceResponseSchema(BaseModel):
     protocolo_autorizacao: Optional[str]
     emitente_cnpj: str
     destinatario_cnpj: str
-    emitente_endereco: dict
-    destinatario_endereco: dict
-    impostos_totais: Optional[dict]
+    emitente_endereco: Dict[str, str]
+    destinatario_endereco: Dict[str, str]
+    impostos_totais: Optional[Dict[str, float]]
     itens: List[ItemResponseSchema]
 
-# Dependency providers
+# Providers de dependência
 
 def get_db_session():
     session = SessionLocal()
@@ -76,24 +86,24 @@ def get_db_session():
 
 def get_emit_use_case(session=Depends(get_db_session)) -> EmitInvoiceUseCase:
     repo = NotaFiscalSqlAlchemyAdapter(session)
-    sefaz_client = SefazClient()
+    client = SefazClient()
     signer = Signer()
-    emissor = NotaFiscalEmissaoAdapter(sefaz_client, signer)
-    return EmitInvoiceUseCase(emissor, repo)
+    adapter = NotaFiscalEmissaoAdapter(client, signer)
+    return EmitInvoiceUseCase(adapter, repo)
 
 
 def get_cancel_use_case(session=Depends(get_db_session)) -> CancelInvoiceUseCase:
     repo = NotaFiscalSqlAlchemyAdapter(session)
-    sefaz_client = SefazClient()
+    client = SefazClient()
     signer = Signer()
-    cancelador = NotaFiscalCancelamentoAdapter(sefaz_client, signer)
-    return CancelInvoiceUseCase(cancelador, repo)
+    adapter = NotaFiscalCancelamentoAdapter(client, signer)
+    return CancelInvoiceUseCase(adapter, repo)
 
 
 def get_repository(session=Depends(get_db_session)) -> NotaFiscalRepository:
     return NotaFiscalSqlAlchemyAdapter(session)
 
-# Emit invoice
+# Rotas
 @router.post("/", response_model=InvoiceResponseSchema, status_code=status.HTTP_201_CREATED)
 def emit_invoice(
     payload: InvoiceCreateSchema,
@@ -102,156 +112,60 @@ def emit_invoice(
     nota = NotaFiscal(
         emitente_cnpj=CnpjCpf(payload.emitente_cnpj),
         destinatario_cnpj=CnpjCpf(payload.destinatario_cnpj),
-        emitente_endereco=Endereco(**payload.emitente_endereco),
-        destinatario_endereco=Endereco(**payload.destinatario_endereco)
+        emitente_endereco=Endereco(**payload.emitente_endereco.dict()),
+        destinatario_endereco=Endereco(**payload.destinatario_endereco.dict())
     )
-    for item_payload in payload.itens:
-        nota.adicionar_item(ItemDaNota(
-            sku=item_payload.sku,
-            descricao=item_payload.descricao,
-            quantidade=item_payload.quantidade,
-            valor_unitario=item_payload.valor_unitario,
-            cfop=item_payload.cfop,
-            ncm=item_payload.ncm,
-            cst=item_payload.cst,
-            impostos=Imposto(**item_payload.impostos)
-        ))
+    # Corrige criação dos itens evitando conflitos de kwargs
+    for item in payload.itens:
+        item_data = item.dict()
+        impostos_dict = item_data.pop('impostos')
+        nota.adicionar_item(
+            ItemDaNota(
+                **item_data,
+                impostos=Imposto(**impostos_dict)
+            )
+        )
     try:
-        nota_emitida = use_case.execute(nota)
+        resultado = use_case.execute(nota)
     except DomainException as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    itens_resp = [
-        ItemResponseSchema(
-            sku=it.sku,
-            descricao=it.descricao,
-            quantidade=it.quantidade,
-            valor_unitario=it.valor_unitario,
-            cfop=it.cfop,
-            ncm=it.ncm,
-            cst=it.cst,
-            impostos=it.impostos.__dict__,
-            total=it.total
-        ) for it in nota_emitida.itens
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+    # Prepara resposta
+    resp = resultado.to_dict()
+    resp['itens'] = [
+        {**it, 'total': it['quantidade'] * it['valor_unitario']} for it in resp['itens']
     ]
-    return InvoiceResponseSchema(
-        id=nota_emitida.id,
-        chave_acesso=nota_emitida.chave_acesso,
-        status=nota_emitida.status.value,
-        data_emissao=nota_emitida.data_emissao,
-        protocolo_autorizacao=nota_emitida.protocolo_autorizacao,
-        emitente_cnpj=nota_emitida.emitente_cnpj.numero,
-        destinatario_cnpj=nota_emitida.destinatario_cnpj.numero,
-        emitente_endereco=nota_emitida.emitente_endereco.__dict__,
-        destinatario_endereco=nota_emitida.destinatario_endereco.__dict__,
-        impostos_totais=(nota_emitida.impostos_totais.__dict__ if nota_emitida.impostos_totais else None),
-        itens=itens_resp
-    )
+    return InvoiceResponseSchema(**resp)
 
-# List all invoices
 @router.get("/", response_model=List[InvoiceResponseSchema])
-def list_invoices(
-    repo: NotaFiscalRepository = Depends(get_repository)
-) -> List[InvoiceResponseSchema]:
-    notas = repo.list_all()
+def list_invoices(repo: NotaFiscalRepository = Depends(get_repository)) -> List[InvoiceResponseSchema]:
     results = []
-    for nota in notas:
-        itens_resp = [
-            ItemResponseSchema(
-                sku=it.sku,
-                descricao=it.descricao,
-                quantidade=it.quantidade,
-                valor_unitario=it.valor_unitario,
-                cfop=it.cfop,
-                ncm=it.ncm,
-                cst=it.cst,
-                impostos=it.impostos.__dict__,
-                total=it.total
-            ) for it in nota.itens
+    for nf in repo.list_all():
+        data = nf.to_dict()
+        data['itens'] = [
+            {**it, 'total': it['quantidade'] * it['valor_unitario']} for it in data['itens']
         ]
-        results.append(InvoiceResponseSchema(
-            id=nota.id,
-            chave_acesso=nota.chave_acesso,
-            status=nota.status.value,
-            data_emissao=nota.data_emissao,
-            protocolo_autorizacao=nota.protocolo_autorizacao,
-            emitente_cnpj=nota.emitente_cnpj.numero,
-            destinatario_cnpj=nota.destinatario_cnpj.numero,
-            emitente_endereco=nota.emitente_endereco.__dict__,
-            destinatario_endereco=nota.destinatario_endereco.__dict__,
-            impostos_totais=(nota.impostos_totais.__dict__ if nota.impostos_totais else None),
-            itens=itens_resp
-        ))
+        results.append(InvoiceResponseSchema(**data))
     return results
 
-# Get invoice by key
 @router.get("/{chave_acesso}", response_model=InvoiceResponseSchema)
-def get_invoice(
-    chave_acesso: str,
-    repo: NotaFiscalRepository = Depends(get_repository)
-) -> InvoiceResponseSchema:
-    nota = repo.get_by_chave(chave_acesso)
-    if not nota:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Nota não encontrada")
-    itens_resp = [
-        ItemResponseSchema(
-            sku=it.sku,
-            descricao=it.descricao,
-            quantidade=it.quantidade,
-            valor_unitario=it.valor_unitario,
-            cfop=it.cfop,
-            ncm=it.ncm,
-            cst=it.cst,
-            impostos=it.impostos.__dict__,
-            total=it.total
-        ) for it in nota.itens
+def get_invoice(chave_acesso: str, repo: NotaFiscalRepository = Depends(get_repository)) -> InvoiceResponseSchema:
+    nf = repo.get_by_chave(chave_acesso)
+    if not nf:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
+    data = nf.to_dict()
+    data['itens'] = [
+        {**it, 'total': it['quantidade'] * it['valor_unitario']} for it in data['itens']
     ]
-    return InvoiceResponseSchema(
-        id=nota.id,
-        chave_acesso=nota.chave_acesso,
-        status=nota.status.value,
-        data_emissao=nota.data_emissao,
-        protocolo_autorizacao=nota.protocolo_autorizacao,
-        emitente_cnpj=nota.emitente_cnpj.numero,
-        destinatario_cnpj=nota.destinatario_cnpj.numero,
-        emitente_endereco=nota.emitente_endereco.__dict__,
-        destinatario_endereco=nota.destinatario_endereco.__dict__,
-        impostos_totais=(nota.impostos_totais.__dict__ if nota.impostos_totais else None),
-        itens=itens_resp
-    )
+    return InvoiceResponseSchema(**data)
 
-# Cancel invoice
 @router.post("/{chave_acesso}/cancel", response_model=InvoiceResponseSchema)
-def cancel_invoice(
-    chave_acesso: str,
-    use_case: CancelInvoiceUseCase = Depends(get_cancel_use_case)
-) -> InvoiceResponseSchema:
+def cancel_invoice(chave_acesso: str, use_case: CancelInvoiceUseCase = Depends(get_cancel_use_case)) -> InvoiceResponseSchema:
     try:
-        nota_cancelada = use_case.execute(chave_acesso)
-    except NotaNaoEncontradaException as e:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e))
-    itens_resp = [
-        ItemResponseSchema(
-            sku=it.sku,
-            descricao=it.descricao,
-            quantidade=it.quantidade,
-            valor_unitario=it.valor_unitario,
-            cfop=it.cfop,
-            ncm=it.ncm,
-            cst=it.cst,
-            impostos=it.impostos.__dict__,
-            total=it.total
-        ) for it in nota_cancelada.itens
+        nf = use_case.execute(chave_acesso)
+    except NotaNaoEncontradaException:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
+    data = nf.to_dict()
+    data['itens'] = [
+        {**it, 'total': it['quantidade'] * it['valor_unitario']} for it in data['itens']
     ]
-    return InvoiceResponseSchema(
-        id=nota_cancelada.id,
-        chave_acesso=nota_cancelada.chave_acesso,
-        status=nota_cancelada.status.value,
-        data_emissao=nota_cancelada.data_emissao,
-        protocolo_autorizacao=nota_cancelada.protocolo_autorizacao,
-        emitente_cnpj=nota_cancelada.emitente_cnpj.numero,
-        destinatario_cnpj=nota_cancelada.destinatario_cnpj.numero,
-        emitente_endereco=nota_cancelada.emitente_endereco.__dict__,
-        destinatario_endereco=nota_cancelada.destinatario_endereco.__dict__,
-        impostos_totais=(nota_cancelada.impostos_totais.__dict__ if nota_cancelada.impostos_totais else None),
-        itens=itens_resp
-    )
+    return InvoiceResponseSchema(**data)

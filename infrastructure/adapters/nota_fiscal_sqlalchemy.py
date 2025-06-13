@@ -1,4 +1,4 @@
-from typing import Optional
+from typing import Optional, List
 from sqlalchemy.orm import Session
 
 from core.entities.nota_fiscal import NotaFiscal
@@ -31,3 +31,12 @@ class NotaFiscalSqlAlchemyAdapter(NotaFiscalRepository):
         if not model:
             return None
         return NotaFiscalMapper.to_entity(model)
+
+
+    def list_all(self) -> List[NotaFiscal]:
+        """
+        Retorna todas as notas fiscais persistidas no banco.
+        """
+        models = self.session.query(NotaFiscalModel).all()
+        return [NotaFiscalMapper.to_entity(m) for m in models]
+

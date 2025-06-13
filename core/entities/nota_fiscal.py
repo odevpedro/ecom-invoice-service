@@ -27,6 +27,19 @@ class ItemDaNota:
     def total(self) -> float:
         return self.quantidade * self.valor_unitario
 
+    def to_dict(self) -> dict:
+        return {
+            "sku": self.sku,
+            "descricao": self.descricao,
+            "quantidade": self.quantidade,
+            "valor_unitario": self.valor_unitario,
+            "cfop": self.cfop,
+            "ncm": self.ncm,
+            "cst": self.cst,
+            "impostos": self.impostos.__dict__,
+            "total": self.total,
+        }
+
 @dataclass
 class NotaFiscal:
 
@@ -73,3 +86,18 @@ class NotaFiscal:
         # será implementada no Application Service
         self.status = StatusNota.AUTORIZADA
         return self.impostos_totais
+
+    def to_dict(self) -> dict:
+        return {
+            "id": str(self.id),
+            "chave_acesso": self.chave_acesso,
+            "status": self.status.value,
+            "data_emissao": self.data_emissao.isoformat(),
+            "protocolo_autorizacao": self.protocolo_autorizacao,
+            "emitente_cnpj": self.emitente_cnpj.numero,
+            "destinatario_cnpj": self.destinatario_cnpj.numero,
+            "emitente_endereco": self.emitente_endereco.__dict__,
+            "destinatario_endereco": self.destinatario_endereco.__dict__,
+            "impostos_totais": (self.impostos_totais.__dict__ if self.impostos_totais else None),
+            "itens": [item.to_dict() for item in self.itens],
+        }
