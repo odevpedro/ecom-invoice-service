@@ -1,27 +1,36 @@
-from dataclasses import dataclass, field
-from datetime import datetime
+# core/entities/nota_fiscal.py
+"""
+Domínio da Nota Fiscal eletrônica e ItemDaNota.
+"""
 from uuid import UUID, uuid4
+from datetime import datetime
 from typing import List, Optional
 
-from core.enum.status_nota import StatusNota
 from core.value_objects.cnpjcpf import CnpjCpf
 from core.value_objects.endereço import Endereco
 from core.value_objects.imposto import Imposto
-from core.exceptions.domain_exceptions import (
-    NotaJaEmitidaException,
-    NotaNaoEncontradaException
-)
+from core.enum.status_nota import StatusNota
 
-@dataclass
 class ItemDaNota:
-    sku: str
-    descricao: str
-    quantidade: int
-    valor_unitario: float
-    cfop: str
-    ncm: str
-    cst: str
-    impostos: Imposto
+    def __init__(
+        self,
+        sku: str,
+        descricao: str,
+        quantidade: int,
+        valor_unitario: float,
+        cfop: str,
+        ncm: str,
+        cst: str,
+        impostos: Imposto
+    ):
+        self.sku = sku
+        self.descricao = descricao
+        self.quantidade = quantidade
+        self.valor_unitario = valor_unitario
+        self.cfop = cfop
+        self.ncm = ncm
+        self.cst = cst
+        self.impostos = impostos
 
     @property
     def total(self) -> float:
@@ -40,52 +49,32 @@ class ItemDaNota:
             "total": self.total,
         }
 
-@dataclass
 class NotaFiscal:
+    """
+    Entidade de domínio representando uma NF-e.
+    """
+    def __init__(
+        self,
+        emitente_cnpj: CnpjCpf,
+        destinatario_cnpj: CnpjCpf,
+        emitente_endereco: Endereco,
+        destinatario_endereco: Endereco
+    ):
+        self.emitente_cnpj = emitente_cnpj
+        self.destinatario_cnpj = destinatario_cnpj
+        self.emitente_endereco = emitente_endereco
+        self.destinatario_endereco = destinatario_endereco
+        self.itens: List[ItemDaNota] = []
+        self.id: UUID = uuid4()
+        self.chave_acesso: Optional[str] = None
+        self.status: StatusNota = StatusNota.EM_PROCESSAMENTO
+        self.data_emissao: datetime = datetime.utcnow()
+        self.protocolo_autorizacao: Optional[str] = None
+        self.impostos_totais: Optional[Imposto] = None
+        self.protocolo_cce: Optional[str] = None
 
-    emitente_cnpj: CnpjCpf
-    destinatario_cnpj: CnpjCpf
-    emitente_endereco: Endereco
-    destinatario_endereco: Endereco
-
-    # Campos opcionais/com default seguem após
-    id: UUID = field(default_factory=uuid4)
-    chave_acesso: Optional[str] = None
-    status: StatusNota = StatusNota.EM_PROCESSAMENTO
-    data_emissao: datetime = field(default_factory=datetime.utcnow)
-    protocolo_autorizacao: Optional[str] = None
-    itens: List[ItemDaNota] = field(default_factory=list)
-    impostos_totais: Optional[Imposto] = None
-
-    def adicionar_item(self, item: ItemDaNota):
-        if self.status is not StatusNota.EM_PROCESSAMENTO:
-            raise NotaJaEmitidaException("Não é possível adicionar itens após emissão.")
+    def adicionar_item(self, item: ItemDaNota) -> None:
         self.itens.append(item)
-
-    def calcular_totais(self) -> float:
-        if not self.itens:
-            raise NotaNaoEncontradaException("Nenhum item para calcular.")
-        total_produtos = sum(item.total for item in self.itens)
-        total_icms = sum(item.impostos.icms for item in self.itens)
-        total_ipi = sum(item.impostos.ipi for item in self.itens)
-        total_pis = sum(item.impostos.pis for item in self.itens)
-        total_cofins = sum(item.impostos.cofins for item in self.itens)
-        self.impostos_totais = Imposto(
-            icms=total_icms,
-            ipi=total_ipi,
-            pis=total_pis,
-            cofins=total_cofins
-        )
-        return total_produtos + self.impostos_totais.total_geral
-
-    def emitir(self):
-        if self.status is not StatusNota.EM_PROCESSAMENTO:
-            raise NotaJaEmitidaException("Nota já foi emitida ou está em estado inválido.")
-        _ = self.calcular_totais()
-        # A lógica de comunicação com SEFAZ e preenchimento de chave/protocolo
-        # será implementada no Application Service
-        self.status = StatusNota.AUTORIZADA
-        return self.impostos_totais
 
     def to_dict(self) -> dict:
         return {
@@ -94,6 +83,7 @@ class NotaFiscal:
             "status": self.status.value,
             "data_emissao": self.data_emissao.isoformat(),
             "protocolo_autorizacao": self.protocolo_autorizacao,
+            "protocolo_cce": self.protocolo_cce,
             "emitente_cnpj": self.emitente_cnpj.numero,
             "destinatario_cnpj": self.destinatario_cnpj.numero,
             "emitente_endereco": self.emitente_endereco.__dict__,

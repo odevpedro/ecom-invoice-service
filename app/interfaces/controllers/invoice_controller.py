@@ -5,14 +5,6 @@ from typing import List, Optional, Dict, TypeAlias
 from uuid import UUID
 from datetime import datetime
 
-# Type aliases for readability (Pydantic v2 uses 'pattern' instead of 'regex')
-CNPJType: TypeAlias = constr(pattern=r'^\d{14}$')
-UFType: TypeAlias = constr(pattern=r'^[A-Z]{2}$')
-CEPType: TypeAlias = constr(pattern=r'^\d{8}$')
-CFOPType: TypeAlias = constr(pattern=r'^\d{4}$')
-NCMType: TypeAlias = constr(pattern=r'^\d{8}$')
-CSTType: TypeAlias = constr(pattern=r'^\d{3}$')
-
 from core.entities.nota_fiscal import NotaFiscal, ItemDaNota
 from core.value_objects.cnpjcpf import CnpjCpf
 from core.value_objects.endereço import Endereco
@@ -21,8 +13,10 @@ from core.exceptions.domain_exceptions import DomainException, NotaNaoEncontrada
 from core.services.ports.nota_fiscal_repository_port import NotaFiscalRepository
 from application.use_cases.emit_invoice import EmitInvoiceUseCase
 from application.use_cases.cancel_invoice import CancelInvoiceUseCase
+from application.use_cases.correct_invoice import CorrectionInvoiceUseCase
 from infrastructure.adapters.emissao_nota_adapter import NotaFiscalEmissaoAdapter
 from infrastructure.adapters.cancelamento_nota_adapter import NotaFiscalCancelamentoAdapter
+from infrastructure.adapters.carta_correcao_nota_adapter import NotaFiscalCorreccaoAdapter
 from infrastructure.adapters.nota_fiscal_sqlalchemy import NotaFiscalSqlAlchemyAdapter
 from infrastructure.external_services.sefaz_client import SefazClient
 from infrastructure.external_services.signer import Signer
@@ -30,7 +24,15 @@ from infrastructure.persistence.db import SessionLocal
 
 router = APIRouter(prefix="/invoices", tags=["invoices"])
 
-# DTOs com validações Pydantic v2
+# Type aliases for readability
+CNPJType: TypeAlias = constr(pattern=r'^\d{14}$')
+UFType: TypeAlias = constr(pattern=r'^[A-Z]{2}$')
+CEPType: TypeAlias = constr(pattern=r'^\d{8}$')
+CFOPType: TypeAlias = constr(pattern=r'^\d{4}$')
+NCMType: TypeAlias = constr(pattern=r'^\d{8}$')
+CSTType: TypeAlias = constr(pattern=r'^\d{3}$')
+
+# Schemas
 class ItemSchema(BaseModel):
     sku: constr(pattern=r'^[A-Z0-9]{3,10}$') = Field(...)
     descricao: constr(min_length=3, max_length=100) = Field(...)
@@ -57,8 +59,15 @@ class InvoiceCreateSchema(BaseModel):
     destinatario_endereco: AddressSchema
     itens: List[ItemSchema] = Field(..., min_items=1)
 
-# Response DTOs
-class ItemResponseSchema(ItemSchema):
+class ItemResponseSchema(BaseModel):
+    sku: str
+    descricao: str
+    quantidade: int
+    valor_unitario: float
+    cfop: str
+    ncm: str
+    cst: str
+    impostos: Dict[str, float]
     total: float
 
 class InvoiceResponseSchema(BaseModel):
@@ -67,6 +76,7 @@ class InvoiceResponseSchema(BaseModel):
     status: str
     data_emissao: datetime
     protocolo_autorizacao: Optional[str]
+    protocolo_cce: Optional[str] = None
     emitente_cnpj: str
     destinatario_cnpj: str
     emitente_endereco: Dict[str, str]
@@ -74,7 +84,10 @@ class InvoiceResponseSchema(BaseModel):
     impostos_totais: Optional[Dict[str, float]]
     itens: List[ItemResponseSchema]
 
-# Providers de dependência
+class CorrectionRequest(BaseModel):
+    texto_correcao: constr(min_length=1, max_length=500) = Field(..., description="Texto da Carta de Correção")
+
+# Dependency providers
 
 def get_db_session():
     session = SessionLocal()
@@ -100,40 +113,38 @@ def get_cancel_use_case(session=Depends(get_db_session)) -> CancelInvoiceUseCase
     return CancelInvoiceUseCase(adapter, repo)
 
 
+def get_correction_use_case(session=Depends(get_db_session)) -> CorrectionInvoiceUseCase:
+    repo = NotaFiscalSqlAlchemyAdapter(session)
+    client = SefazClient()
+    adapter = NotaFiscalCorreccaoAdapter(client)
+    return CorrectionInvoiceUseCase(adapter, repo)
+
+
 def get_repository(session=Depends(get_db_session)) -> NotaFiscalRepository:
     return NotaFiscalSqlAlchemyAdapter(session)
 
-# Rotas
+# Routes
 @router.post("/", response_model=InvoiceResponseSchema, status_code=status.HTTP_201_CREATED)
 def emit_invoice(
     payload: InvoiceCreateSchema,
     use_case: EmitInvoiceUseCase = Depends(get_emit_use_case)
 ) -> InvoiceResponseSchema:
     nota = NotaFiscal(
-        emitente_cnpj=CnpjCpf(payload.emitente_cnpj),
-        destinatario_cnpj=CnpjCpf(payload.destinatario_cnpj),
-        emitente_endereco=Endereco(**payload.emitente_endereco.dict()),
-        destinatario_endereco=Endereco(**payload.destinatario_endereco.dict())
+        CnpjCpf(payload.emitente_cnpj),
+        CnpjCpf(payload.destinatario_cnpj),
+        Endereco(**payload.emitente_endereco.dict()),
+        Endereco(**payload.destinatario_endereco.dict())
     )
-    # Corrige criação dos itens evitando conflitos de kwargs
     for item in payload.itens:
-        item_data = item.dict()
-        impostos_dict = item_data.pop('impostos')
-        nota.adicionar_item(
-            ItemDaNota(
-                **item_data,
-                impostos=Imposto(**impostos_dict)
-            )
-        )
+        data = item.dict()
+        impostos_dict = data.pop('impostos')
+        nota.adicionar_item(ItemDaNota(**data, impostos=Imposto(**impostos_dict)))
     try:
         resultado = use_case.execute(nota)
     except DomainException as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
-    # Prepara resposta
     resp = resultado.to_dict()
-    resp['itens'] = [
-        {**it, 'total': it['quantidade'] * it['valor_unitario']} for it in resp['itens']
-    ]
+    resp['itens'] = [{**it, 'total': it['quantidade'] * it['valor_unitario']} for it in resp['itens']]
     return InvoiceResponseSchema(**resp)
 
 @router.get("/", response_model=List[InvoiceResponseSchema])
@@ -141,9 +152,7 @@ def list_invoices(repo: NotaFiscalRepository = Depends(get_repository)) -> List[
     results = []
     for nf in repo.list_all():
         data = nf.to_dict()
-        data['itens'] = [
-            {**it, 'total': it['quantidade'] * it['valor_unitario']} for it in data['itens']
-        ]
+        data['itens'] = [{**it, 'total': it['quantidade'] * it['valor_unitario']} for it in data['itens']]
         results.append(InvoiceResponseSchema(**data))
     return results
 
@@ -151,21 +160,33 @@ def list_invoices(repo: NotaFiscalRepository = Depends(get_repository)) -> List[
 def get_invoice(chave_acesso: str, repo: NotaFiscalRepository = Depends(get_repository)) -> InvoiceResponseSchema:
     nf = repo.get_by_chave(chave_acesso)
     if not nf:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Nota não encontrada")
     data = nf.to_dict()
-    data['itens'] = [
-        {**it, 'total': it['quantidade'] * it['valor_unitario']} for it in data['itens']
-    ]
+    data['itens'] = [{**it, 'total': it['quantidade'] * it['valor_unitario']} for it in data['itens']]
     return InvoiceResponseSchema(**data)
 
 @router.post("/{chave_acesso}/cancel", response_model=InvoiceResponseSchema)
 def cancel_invoice(chave_acesso: str, use_case: CancelInvoiceUseCase = Depends(get_cancel_use_case)) -> InvoiceResponseSchema:
     try:
         nf = use_case.execute(chave_acesso)
-    except NotaNaoEncontradaException:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
+    except NotaNaoEncontradaException as e:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e))
     data = nf.to_dict()
-    data['itens'] = [
-        {**it, 'total': it['quantidade'] * it['valor_unitario']} for it in data['itens']
-    ]
+    data['itens'] = [{**it, 'total': it['quantidade'] * it['valor_unitario']} for it in data['itens']]
+    return InvoiceResponseSchema(**data)
+
+@router.post("/{chave_acesso}/correction", response_model=InvoiceResponseSchema)
+def correct_invoice(
+    chave_acesso: str,
+    payload: CorrectionRequest,
+    use_case: CorrectionInvoiceUseCase = Depends(get_correction_use_case)
+) -> InvoiceResponseSchema:
+    try:
+        nf = use_case.execute(chave_acesso, payload.texto_correcao)
+    except NotaNaoEncontradaException as e:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e))
+    except DomainException as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+    data = nf.to_dict()
+    data['itens'] = [{**it, 'total': it['quantidade'] * it['valor_unitario']} for it in data['itens']]
     return InvoiceResponseSchema(**data)

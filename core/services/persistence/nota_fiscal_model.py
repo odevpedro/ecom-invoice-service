@@ -7,8 +7,6 @@ from core.services.persistence.status_nota_model import StatusNotaModel
 from core.services.persistence.base import Base
 
 
-
-
 class NotaFiscalModel(Base):
     __tablename__ = "nota_fiscal"
 
