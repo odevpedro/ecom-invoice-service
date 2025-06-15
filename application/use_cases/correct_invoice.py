@@ -1,11 +1,15 @@
 # application/use_cases/correct_invoice.py
 """
-Use case para Carta de Correção Eletrônica (CC-e) de uma Nota Fiscal.
+Caso de uso: Emissão de Carta de Correção Eletrônica.
 """
 from core.entities.nota_fiscal import NotaFiscal
-from core.exceptions.domain_exceptions import NotaNaoEncontradaException, DomainException
+from core.exceptions.domain_exceptions import DomainException, NotaNaoEncontradaException
+from core.enum.status_nota import StatusNota
 from core.services.ports.carta_correcao_port import CartaCorrecaoPort
+from core.services.persistence.nota_fiscal_model import NotaFiscalModel
+from core.services.persistence.item_da_nota_model import ItemDaNotaModel
 from core.services.ports.nota_fiscal_repository_port import NotaFiscalRepository
+
 
 class CorrectionInvoiceUseCase:
     """
@@ -23,18 +27,21 @@ class CorrectionInvoiceUseCase:
         self.repository = repository
 
     def execute(self, chave_acesso: str, texto_correcao: str) -> NotaFiscal:
+        # Recupera nota
         nota = self.repository.get_by_chave(chave_acesso)
-        if not nota:
+        if nota is None:
             raise NotaNaoEncontradaException(f"Nota com chave {chave_acesso} não encontrada.")
 
-        if nota.status.value != "AUTORIZADA":
+        # Só nota autorizada pode receber correção
+        if nota.status is not StatusNota.AUTORIZADA:
             raise DomainException("Somente notas autorizadas podem receber Carta de Correção.")
 
-        # Dispara correção
+        # Dispara correção via port
         resultado = self.correction_port.corrigir(chave_acesso, texto_correcao)
 
-        # Atualiza entidade (mantém status original)
+        # Atualiza protocolo da correção na entidade
         nota.protocolo_cce = resultado.protocol_number
-        # persiste
+
+        # Persiste a alteração
         self.repository.save(nota)
         return nota
