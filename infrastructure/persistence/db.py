@@ -5,7 +5,11 @@ Database configuration and session factory using SQLAlchemy.
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 import os
+# no topo de infrastructure/persistence/db.py
+from sqlalchemy.ext.declarative import declarative_base
 
+# crie o Base para as suas models
+Base = declarative_base()
 # Use environment variable or default URL
 DATABASE_URL = os.getenv("DATABASE_URL", "postgresql+psycopg://user:password@localhost:5432/invoice_db")
 
