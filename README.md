@@ -112,6 +112,7 @@ docker compose exec app pytest --cov=. --cov-report=term-missing
 
 > Documentação completa e interativa disponível em `http://localhost:8000/docs` após subir o projeto.
 
+
 ---
 
 ## Documentação Técnica
