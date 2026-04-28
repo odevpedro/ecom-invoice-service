@@ -1,9 +1,7 @@
 from abc import ABC, abstractmethod
 from typing import Optional, List
 
-from application.mappers.nota_fiscal_mapper import NotaFiscalMapper
 from core.entities.nota_fiscal import NotaFiscal
-from core.services.persistence.nota_fiscal_model import NotaFiscalModel
 
 
 class NotaFiscalRepository(ABC):
@@ -21,6 +19,6 @@ class NotaFiscalRepository(ABC):
         """
         pass
 
+    @abstractmethod
     def list_all(self) -> List[NotaFiscal]:
-        models = self.session.query(NotaFiscalModel).all()
-        return [NotaFiscalMapper.to_entity(m) for m in models]
+        pass

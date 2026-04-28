@@ -85,5 +85,5 @@ class NotaFiscalMapper:
                 impostos=it.impostos.__dict__
             )
             item_models.append(item_model)
-        model.itens = item_models
+        model.items = item_models
         return model
